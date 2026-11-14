@@ -279,6 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.toolbarStyle = .preference
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.fullScreenNone]
+        // NSTabViewController otherwise defaults to a cramped 500 pt window.
+        window.setContentSize(NSSize(width: 790, height: 655))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
