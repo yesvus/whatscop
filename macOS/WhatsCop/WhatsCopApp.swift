@@ -1,232 +1,311 @@
-import SwiftUI
 import AppKit
+import SwiftUI
+import Charts
 
-@MainActor
-final class ReportModel: ObservableObject {
-    @Published private(set) var snapshot: ScanSnapshot?
-    @Published private(set) var isScanning = false
-    @Published private(set) var error: String?
-    @Published private(set) var lastScanned: Date?
-
-    func refresh(olderThanDays: Int) {
-        guard !isScanning else { return }
-        isScanning = true
-        error = nil
-        Task.detached(priority: .userInitiated) { [weak self] in
-            do {
-                let result = try ScanEngine.scan(olderThanDays: olderThanDays)
-                await self?.didFinish(result)
-            } catch {
-                await self?.didFail(error.localizedDescription)
-            }
-        }
-    }
-
-    private func didFinish(_ result: ScanSnapshot) {
-        snapshot = result
-        lastScanned = Date()
-        isScanning = false
-    }
-
-    private func didFail(_ description: String) {
-        error = description
-        isScanning = false
-    }
-}
-
-struct StatTile: View {
-    let title: String
-    let value: String
-    let subtitle: String
+struct OverviewView: View {
+    @ObservedObject var model: ReportModel
+    @ObservedObject var settings: UISettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 26, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-            Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(17)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 13))
-    }
-}
-
-struct DiskRow: View {
-    let label: String
-    let detail: String
-    let usage: Usage
-    let total: Int64
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(label).lineLimit(1).truncationMode(.middle)
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                Text(Self.bytes(usage.allocated))
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color(nsColor: .separatorColor).opacity(0.45))
-                    Capsule().fill(Color.accentColor)
-                        .frame(width: geo.size.width * min(1, CGFloat(usage.allocated) / CGFloat(max(total, 1))))
+        VStack(alignment: .leading, spacing: 17) {
+            ScanBanner(model: model, olderThanDays: settings.olderThanDays)
+            if let report = model.snapshot {
+                HStack(spacing: 10) {
+                    MetricTile(systemName: "externaldrive",
+                               title: "Allocated media",
+                               value: Display.bytes(report.total.allocated),
+                               detail: report.total.files.formatted() + " files")
+                    MetricTile(systemName: "bubble.left.and.bubble.right",
+                               title: "Conversations",
+                               value: report.chats.count.formatted(),
+                               detail: "Folders containing media")
+                    MetricTile(systemName: "calendar",
+                               title: "Older than \(report.olderThanDays) days",
+                               value: Display.bytes(report.total.olderAllocated),
+                               detail: report.total.olderFiles.formatted() + " files · may still be needed")
                 }
-            }
-            .frame(height: 5)
-            Text(detail + " · " + usage.files.formatted() + " files")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 6)
-    }
-
-    static func bytes(_ value: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: value, countStyle: .binary)
-    }
-}
-
-@MainActor
-final class UISettings: ObservableObject {
-    @Published var showChatIDs = false
-    @Published var olderThanDays = 90
-    @Published var selectedTab = 0
-}
-
-struct ReportView: View {
-    @StateObject private var model = ReportModel()
-    @StateObject private var settings = UISettings()
-
-    private let ageOptions = [30, 90, 180, 365]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 13) {
-                Image(systemName: "externaldrive.fill.badge.person.crop")
-                    .font(.system(size: 31))
-                    .foregroundStyle(.tint)
-                    .frame(width: 50, height: 50)
-                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 13))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("WhatsCop").font(.system(size: 24, weight: .bold, design: .rounded))
-                    Text("WhatsApp media · read-only disk analysis")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if model.isScanning {
-                    ProgressView().controlSize(.small)
-                }
-                Button {
-                    model.refresh(olderThanDays: settings.olderThanDays)
-                } label: {
-                    Label("Scan again", systemImage: "arrow.clockwise")
-                }.disabled(model.isScanning)
-            }
-
-            if let snapshot = model.snapshot {
-                HStack(spacing: 12) {
-                    StatTile(title: "Allocated media", value: DiskRow.bytes(snapshot.total.allocated),
-                             subtitle: snapshot.total.files.formatted() + " files")
-                    StatTile(title: "Conversations", value: snapshot.chats.count.formatted(),
-                             subtitle: "folders with media")
-                    StatTile(title: "Older than " + String(snapshot.olderThanDays) + " days",
-                             value: DiskRow.bytes(snapshot.total.olderAllocated),
-                             subtitle: snapshot.total.olderFiles.formatted() + " files · not necessarily disposable")
-                }
-
-                HStack(spacing: 14) {
-                    Picker("Modified before", selection: $settings.olderThanDays) {
-                        ForEach(ageOptions, id: \.self) { days in Text("\(days) days").tag(days) }
-                    }
-                    .frame(width: 180)
-                    .onChange(of: settings.olderThanDays) { newValue in
-                        model.refresh(olderThanDays: newValue)
-                    }
-                    Toggle("Reveal chat IDs", isOn: $settings.showChatIDs)
-                        .toggleStyle(.checkbox)
-                    Spacer()
-                    if let last = model.lastScanned {
-                        Text("Scanned " + last.formatted(date: .omitted, time: .shortened))
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }
-
-                Picker("Details", selection: $settings.selectedTab) {
-                    Text("Conversations").tag(0)
-                    Text("File types").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        if settings.selectedTab == 0 {
-                            ForEach(Array(snapshot.chats.enumerated()), id: \.element.id) { index, entry in
-                                DiskRow(label: settings.showChatIDs ? entry.id : "Conversation #\(index + 1)",
-                                        detail: entry.kind,
-                                        usage: entry.usage, total: snapshot.total.allocated)
-                                if index < snapshot.chats.count - 1 { Divider() }
-                            }
-                        } else {
-                            ForEach(snapshot.types) { entry in
-                                DiskRow(label: entry.id, detail: "Media file type",
-                                        usage: entry.usage, total: snapshot.total.allocated)
-                                if entry.id != snapshot.types.last?.id { Divider() }
-                            }
+                HStack(spacing: 10) {
+                    Picker("Older than", selection: $settings.olderThanDays) {
+                        ForEach([30, 90, 180, 365], id: \.self) { d in
+                            Text("\(d) days").tag(d)
                         }
                     }
-                    .padding(.horizontal, 4)
+                    .frame(width: 200)
+                    .onChange(of: settings.olderThanDays) { value in
+                        model.refresh(olderThanDays: value)
+                    }
+                    Spacer()
+                    if let date = model.lastScanned {
+                        Text("Last scan: " + date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .frame(minHeight: 230)
-                if snapshot.errors > 0 {
-                    Label("\(snapshot.errors) entries could not be read; numbers may be incomplete.",
+                HStack(alignment: .top, spacing: 10) {
+                    CardPanel(title: "Largest conversations", icon: "bubble.left.and.bubble.right") {
+                        ForEach(Array(report.chats.prefix(5).enumerated()), id: \.element.id) { i, row in
+                            MediaRow(label: "Conversation #\(i + 1)", kind: row.kind,
+                                     usage: row.usage, total: report.total.allocated)
+                            if i < min(report.chats.count, 5) - 1 { Divider() }
+                        }
+                    }
+                    CardPanel(title: "Media file types", icon: "chart.pie") {
+                        ForEach(Array(report.types.prefix(5).enumerated()), id: \.element.id) { i, row in
+                            MediaRow(label: row.id, kind: "File type",
+                                     usage: row.usage, total: report.total.allocated)
+                            if i < min(report.types.count, 5) - 1 { Divider() }
+                        }
+                    }
+                }
+                if report.errors > 0 {
+                    Label("Some folders could not be scanned (\(report.errors) errors).",
                           systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
-                }
-                if snapshot.skippedSymlinks > 0 {
-                    Text("\(snapshot.skippedSymlinks) symbolic links skipped.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.system(size: 11))
                 }
             } else if model.isScanning {
-                Spacer()
-                HStack { Spacer(); ProgressView("Scanning file metadata…"); Spacer() }
-                Spacer()
-            } else if let error = model.error {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "externaldrive.badge.xmark")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.secondary)
-                    Text(error).font(.headline)
-                    Text("WhatsApp may not be installed, or macOS may deny access.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                Spacer()
+                LoadingPlaceholder(message: "Scanning WhatsApp media metadata…")
+            } else {
+                Text(model.error ?? "No scan results yet.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            Divider()
-            HStack {
-                Label("Analysis only — never deletes messages or media", systemImage: "lock.shield")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                Spacer()
-                Text("APFS estimates may differ from recoverable space")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
-            }
+            Spacer(minLength: 0)
+            PrivacyFooter()
         }
-        .padding(24)
-        .frame(minWidth: 690, idealWidth: 780, minHeight: 610, idealHeight: 680)
-        .task { model.refresh(olderThanDays: settings.olderThanDays) }
+        .padding(23)
+        .frame(width: 790, height: 655)
     }
 }
 
-@main
-struct WhatsCopApp: App {
-    var body: some Scene {
-        WindowGroup("WhatsCop") {
-            ReportView()
+struct ConversationsView: View {
+    @ObservedObject var model: ReportModel
+    @ObservedObject var settings: UISettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Conversations").font(.system(size: 20, weight: .semibold))
+                    Text("Largest media folders, sorted by allocated size")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Reveal identifiers", isOn: $settings.revealChatIDs)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12))
+            }
+            if let report = model.snapshot {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(report.chats.enumerated()), id: \.element.id) { i, row in
+                            MediaRow(label: settings.revealChatIDs ? row.id : "Conversation #\(i + 1)",
+                                     kind: row.kind, usage: row.usage,
+                                     total: report.total.allocated)
+                            Divider()
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                .background(Color(nsColor: .controlBackgroundColor),
+                            in: RoundedRectangle(cornerRadius: 11))
+                HStack {
+                    Text("\(report.chats.count) folders · \(report.total.files.formatted()) files")
+                    Spacer()
+                    Text("Identifiers are hidden by default")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            } else {
+                LoadingPlaceholder(message: model.error ?? "Scan to view conversations")
+            }
+            PrivacyFooter()
         }
-        .windowResizability(.contentSize)
+        .padding(24)
+        .frame(width: 790, height: 655)
+    }
+}
+
+struct HistoryView: View {
+    @ObservedObject var model: ReportModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Storage history").font(.system(size: 20, weight: .semibold))
+                    Text("A private summary saved after each complete scan")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(model.history.count) daily snapshots")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            if let last = model.history.last {
+                HStack(spacing: 10) {
+                    MetricTile(systemName: "externaldrive", title: "Latest usage",
+                               value: Display.bytes(last.allocated),
+                               detail: last.timestamp.formatted(date: .abbreviated, time: .shortened))
+                    MetricTile(systemName: "chart.line.uptrend.xyaxis", title: "Since first scan",
+                               value: Display.signedBytes(last.allocated - (model.history.first?.allocated ?? last.allocated)),
+                               detail: "Net change across tracked days")
+                    MetricTile(systemName: "clock.arrow.circlepath", title: "Tracked days",
+                               value: String(model.history.count),
+                               detail: "One snapshot per UTC day")
+                }
+                CardPanel(title: "Allocated storage over time", icon: "chart.xyaxis.line") {
+                    if model.history.count < 2 {
+                        VStack(spacing: 10) {
+                            Image(systemName: "chart.xyaxis.line")
+                                .font(.system(size: 29)).foregroundStyle(.secondary)
+                            Text("History starts with today's scan")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Scan again on another day to see the trend.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
+                    } else {
+                        Chart(model.history) { item in
+                            LineMark(x: .value("Date", item.timestamp),
+                                     y: .value("Allocated bytes", item.allocated))
+                                .foregroundStyle(Color.accentColor)
+                            PointMark(x: .value("Date", item.timestamp),
+                                      y: .value("Allocated bytes", item.allocated))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .chartYScale(domain: .automatic(includesZero: false))
+                        .frame(height: 280)
+                        .padding(.vertical, 12)
+                    }
+                }
+                if let issue = model.historyError {
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 11))
+                }
+                Text("History stores only the scan date, total size, file count and chat count.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                LoadingPlaceholder(message: "No history yet. Run your first scan from Overview.")
+            }
+            Spacer(minLength: 0)
+            PrivacyFooter()
+        }
+        .padding(24)
+        .frame(width: 790, height: 655)
+    }
+}
+
+struct AboutView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            if let icon = Display.icon() {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 98, height: 98)
+            }
+            Text("WhatsCop").font(.system(size: 23, weight: .bold, design: .rounded))
+            Text("Version 0.3.0")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            Text("A small native macOS utility for understanding WhatsApp media storage.")
+                .multilineTextAlignment(.center)
+                .font(.system(size: 12))
+                .frame(width: 440)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 9) {
+                Label("All scans run locally; no telemetry or uploads", systemImage: "network.slash")
+                Label("Messages, media contents and WhatsApp databases are never opened",
+                      systemImage: "lock")
+                Label("Disk history contains aggregate sizes only", systemImage: "chart.bar.xaxis")
+                Label("WhatsApp media is never deleted or modified", systemImage: "checkmark.shield")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .padding(.top, 13)
+            Button("View source on GitHub") {
+                if let url = URL(string: "https://github.com/yesvus/whatscop") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .padding(.top, 8)
+            Spacer()
+            PrivacyFooter()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .frame(width: 790, height: 655)
+    }
+}
+
+@MainActor
+final class PreferencesController: NSTabViewController {
+    let model = ReportModel()
+    let settings = UISettings()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "WhatsCop"
+        tabStyle = .toolbar
+        transitionOptions = []
+        addTab("Overview", icon: "square.grid.2x2", view: OverviewView(model: model, settings: settings))
+        addTab("Conversations", icon: "bubble.left.and.bubble.right", view: ConversationsView(model: model, settings: settings))
+        addTab("History", icon: "chart.xyaxis.line", view: HistoryView(model: model))
+        addTab("About", icon: "info.circle", view: AboutView())
+    }
+
+    private func addTab<V: View>(_ title: String, icon: String, view: V) {
+        let controller = NSHostingController(rootView: view)
+        let item = NSTabViewItem(viewController: controller)
+        item.label = title
+        item.identifier = title
+        item.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+        addTabViewItem(item)
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var window: NSWindow?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        let tabs = PreferencesController()
+        let window = NSWindow(contentViewController: tabs)
+        window.title = "WhatsCop"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.toolbarStyle = .preference
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenNone]
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.window = window
+        tabs.model.refresh(olderThanDays: tabs.settings.olderThanDays)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+@MainActor
+@main
+struct WhatsCopApp {
+    // NSApplication.delegate is weak; keep a strong reference for the app lifetime.
+    private static let retainedDelegate = AppDelegate()
+
+    static func main() {
+        let app = NSApplication.shared
+        app.delegate = retainedDelegate
+        // Manual AppKit entry points must complete launch before entering the run loop.
+        app.finishLaunching()
+        app.run()
     }
 }
