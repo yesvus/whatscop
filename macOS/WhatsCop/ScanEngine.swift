@@ -32,6 +32,11 @@ struct ScanSnapshot: Sendable {
     let skippedSymlinks: Int
     let errors: Int
     let olderThanDays: Int
+    // Keep diagnostic counters separate from potentially transient directory changes.
+    var unreadableFolders = 0
+    var unreadableFiles = 0
+    var skippedChanges = 0
+    var permissionErrors = 0
 }
 
 enum ScanError: LocalizedError {
@@ -70,6 +75,10 @@ enum ScanEngine {
         var chats: [String: Usage] = [:]
         var extensions: [String: Usage] = [:]
         var errors = 0
+        var unreadableFolders = 0
+        var unreadableFiles = 0
+        var skippedChanges = 0
+        var permissionErrors = 0
         var skippedSymlinks = 0
         var stack: [(URL, String)] = [(root, "(root files)")]
 
@@ -78,7 +87,19 @@ enum ScanEngine {
             do {
                 names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
             } catch {
-                errors += 1
+                let nsError = error as NSError
+                let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+                let posix = underlying?.domain == NSPOSIXErrorDomain ? (underlying?.code ?? -1) : -1
+                if nsError.code == NSFileReadNoSuchFileError || posix == ENOENT {
+                    // WhatsApp can remove or rename a media directory during a scan.
+                    skippedChanges += 1
+                } else {
+                    errors += 1
+                    unreadableFolders += 1
+                    if nsError.code == NSFileReadNoPermissionError || posix == EACCES || posix == EPERM {
+                        permissionErrors += 1
+                    }
+                }
                 continue
             }
 
@@ -86,7 +107,15 @@ enum ScanEngine {
                 let file = folder.appendingPathComponent(name)
                 var info = stat()
                 guard lstat(file.path, &info) == 0 else {
-                    errors += 1
+                    let code = errno
+                    if code == ENOENT {
+                        // File disappeared between listing and stat; not a permission failure.
+                        skippedChanges += 1
+                    } else {
+                        errors += 1
+                        unreadableFiles += 1
+                        if code == EACCES || code == EPERM { permissionErrors += 1 }
+                    }
                     continue
                 }
                 let fileType = info.st_mode & mode_t(S_IFMT)
@@ -120,7 +149,13 @@ enum ScanEngine {
             .sorted { a, b in
                 a.usage.allocated == b.usage.allocated ? a.id < b.id : a.usage.allocated > b.usage.allocated
             }
-        return ScanSnapshot(total: total, chats: sortedChats, types: sortedTypes,
-                            skippedSymlinks: skippedSymlinks, errors: errors, olderThanDays: olderThanDays)
+        var result = ScanSnapshot(total: total, chats: sortedChats, types: sortedTypes,
+                                  skippedSymlinks: skippedSymlinks, errors: errors,
+                                  olderThanDays: olderThanDays)
+        result.unreadableFolders = unreadableFolders
+        result.unreadableFiles = unreadableFiles
+        result.skippedChanges = skippedChanges
+        result.permissionErrors = permissionErrors
+        return result
     }
 }

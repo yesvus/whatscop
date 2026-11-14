@@ -20,6 +20,7 @@ SDK="$(xcrun --show-sdk-path)"
 swiftc -O -parse-as-library -sdk "$SDK" -target arm64-apple-macos13.0 \
   "$ROOT/WhatsCop/ScanEngine.swift" \
   "$ROOT/WhatsCop/HistoryStore.swift" \
+  "$ROOT/WhatsCop/ScanDiagnostics.swift" \
   "$ROOT/WhatsCop/ReportModel.swift" \
   "$ROOT/WhatsCop/Components.swift" \
   "$ROOT/WhatsCop/WhatsCopApp.swift" \

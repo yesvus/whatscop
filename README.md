@@ -50,7 +50,7 @@ The app uses a native Swift filesystem metadata scanner: **no Python runtime req
 
 The CLI remains available as a separate tool, and can output JSON. No network access is required for either interface.
 
-## Native macOS GUI (v0.3)
+## Native macOS GUI (v0.3.1)
 
 WhatsCop has a compact native macOS preferences-style interface (SwiftUI + AppKit toolbar tabs):
 **Overview**, **Conversations**, **History**, and **About**. The AppIcon source is included in
@@ -87,3 +87,35 @@ WhatsApp continuously or run a background agent.
 The analysis is **read-only with respect to WhatsApp's files**; only WhatsCop's
 own aggregate history is written. An old file's modification time does not
 make it safe to delete from WhatsApp.
+
+### Scan warnings
+
+WhatsApp may update attachments while a scan is running. Files or directories
+that disappear between listing and inspection are treated as transient changes,
+not failed scans. Unreadable folders and files are counted separately and
+reported without exposing their paths. If macOS restricts access to the media
+folder, allow WhatsCop access in System Settings > Privacy & Security, then
+rescan. Historical snapshots are only saved for scans with no unreadable entries.
+
+The app writes a private aggregate-only diagnostic record to
+~/Library/Application Support/WhatsCop/last-scan.json. This contains file
+counts, access errors, transient change counts, and a timestamp,
+but never filenames, chat identifiers, or message contents.
+
+### macOS app data permission
+
+On recent macOS versions, other apps' private Group Containers require
+explicit user permission. If the GUI reports that it cannot scan WhatsApp
+media, use **Choose WhatsApp Media…** to select the Media directory in the
+system file picker. This is narrower than granting Full Disk Access.
+
+Expected folder:
+
+    ~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media
+
+Use Command-Shift-G in the picker to enter the folder path if needed.
+
+If the macOS file picker cannot grant access, explicitly grant WhatsCop
+permission in **System Settings > Privacy & Security > Full Disk Access**,
+quit and reopen the app, and scan again. WhatsCop never bypasses or
+modifies macOS permissions.

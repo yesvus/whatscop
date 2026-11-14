@@ -52,7 +52,20 @@ struct ScanEngineTests {
             // expected
         }
 
-        print("PASS: native scanner synthetic fixtures (3 files, symlink, redaction-independent metadata)")
+        // A blocked directory is a real permission error, not a vanished-file race.
+        let restricted = root.appendingPathComponent("restricted@g.us")
+        try fm.createDirectory(at: restricted, withIntermediateDirectories: true)
+        try Data(repeating: 0x44, count: 42).write(to: restricted.appendingPathComponent("blocked.jpg"))
+        expect(chmod(restricted.path, 0) == 0, "restrict directory")
+        defer { _ = chmod(restricted.path, mode_t(0o700)) }
+        if geteuid() != 0 {
+            let partial = try ScanEngine.scan(root: root)
+            expect(partial.unreadableFolders == 1, "counts unreadable directories")
+            expect(partial.permissionErrors == 1, "detects denied read access")
+            expect(partial.unreadableFiles == 0, "does not report unreadable files as folders")
+        }
+
+        print("PASS: native scanner synthetic fixtures (files, symlinks, blocked folders)")
         if CommandLine.arguments.contains("--live") {
             let live = try ScanEngine.scan()
             print("LIVE: \(live.total.files) files, \(live.chats.count) chat folders, \(live.total.allocated) allocated bytes, \(live.errors) errors")

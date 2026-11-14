@@ -11,3 +11,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: python3 -m unittest discover -s tests -v
+
+  native-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Swift scanner and local history
+        run: ./macOS/test.sh
+      - name: Build native macOS app
+        run: ./macOS/build.sh
+      - name: Check app signature
+        run: codesign --verify --deep --strict macOS/build/WhatsCop.app

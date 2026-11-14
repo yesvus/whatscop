@@ -6,10 +6,51 @@ struct OverviewView: View {
     @ObservedObject var model: ReportModel
     @ObservedObject var settings: UISettings
 
+    private func requestReadOnlyAccess() {
+        let picker = NSOpenPanel()
+        picker.title = "Allow WhatsCop to inspect WhatsApp media"
+        picker.message = "Select the Media folder inside WhatsApp's Group Container. WhatsCop reads file metadata only."
+        picker.prompt = "Select Media"
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        picker.allowsMultipleSelection = false
+        picker.directoryURL = ScanEngine.defaultRoot.deletingLastPathComponent()
+        picker.begin { response in
+            if response == .OK, let selected = picker.url {
+                model.useSelectedMediaFolder(selected, olderThanDays: settings.olderThanDays)
+            }
+        }
+    }
+
+    private func openFullDiskAccessSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
             ScanBanner(model: model, olderThanDays: settings.olderThanDays)
-            if let report = model.snapshot {
+            if let report = model.snapshot, report.permissionErrors > 0 && report.total.files == 0 {
+                CardPanel(title: "Permission required", icon: "lock.shield") {
+                    Text("macOS is blocking WhatsCop from reading WhatsApp's private media folder. Nothing was deleted.")
+                        .font(.system(size: 13))
+                    Text("Grant access to the Media folder using the macOS file picker. Full Disk Access is an optional fallback.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Choose WhatsApp Media…") { requestReadOnlyAccess() }
+                            .buttonStyle(.borderedProminent)
+                        Button("Full Disk Access settings") { openFullDiskAccessSettings() }
+                    }
+                    if let message = model.selectedFolderError {
+                        Text(message).foregroundStyle(.orange).font(.system(size: 11))
+                    }
+                    Text("If you enable Full Disk Access, quit and reopen WhatsCop, then scan again.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            } else if let report = model.snapshot {
                 HStack(spacing: 10) {
                     MetricTile(systemName: "externaldrive",
                                title: "Allocated media",
@@ -58,10 +99,16 @@ struct OverviewView: View {
                     }
                 }
                 if report.errors > 0 {
-                    Label("Some folders could not be scanned (\(report.errors) errors).",
+                    Label("\(report.unreadableFolders) unreadable folder(s), \(report.unreadableFiles) unreadable file(s)."
+                          + (report.permissionErrors > 0 ? " Check macOS file permissions." : " The scan may be incomplete."),
                           systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                         .font(.system(size: 11))
+                }
+                if report.skippedChanges > 0 {
+                    Text("\(report.skippedChanges) entries changed while scanning; WhatsApp may be updating its media.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             } else if model.isScanning {
                 LoadingPlaceholder(message: "Scanning WhatsApp media metadata…")
