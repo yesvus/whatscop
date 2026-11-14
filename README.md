@@ -33,3 +33,15 @@ The native WhatsApp desktop app currently stores attachments in a Media director
 - Delete actual attachments through WhatsApp's own storage management tools, not by manipulating its live data directories.
 
 This is a deliberately small first release, not a general-purpose macOS cleaner.
+
+## Native macOS GUI (v0.2)
+
+Build a standalone SwiftUI app with Xcode Command Line Tools (Apple Silicon, macOS 13+):
+
+    ./macOS/test.sh
+    ./macOS/build.sh
+    open macOS/build/WhatsCop.app
+
+The app uses a native Swift filesystem metadata scanner: **no Python runtime required**. It shows a disk summary, conversations (identifiers hidden by default), file types, and a selectable last-modified age threshold. Refresh is manual and scanning happens off the main thread. There is no background agent or deletion capability.
+
+The CLI remains available as a separate tool, and can output JSON. No network access is required for either interface.
