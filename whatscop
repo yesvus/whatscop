@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Read-only report of WhatsApp for macOS media usage."""
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from collections import defaultdict
+
+ROOT = Path.home() / "Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media"
+
+
+def empty():
+    return dict(files=0, logical=0, allocated=0, old_files=0, old_allocated=0)
+
+
+def chat_type(name):
+    if name.endswith("@g.us"):
+        return "group"
+    if name.endswith("@newsletter"):
+        return "channel"
+    if name.endswith("@s.whatsapp.net"):
+        return "direct"
+    return "other"
+
+
+def scan(root, older_than=90, now=None):
+    root = Path(root).expanduser()
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("media root must be a real directory: " + str(root))
+    cutoff = (time.time() if now is None else now) - older_than * 86400
+    total = empty()
+    chats = defaultdict(empty)
+    kinds = defaultdict(empty)
+    skipped, errors = 0, 0
+    stack = [(root, "(root files)")]
+    while stack:
+        directory, chat = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            skipped += 1
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append((Path(entry.path), entry.name if directory == root else chat))
+                        elif entry.is_file(follow_symlinks=False):
+                            stat = entry.stat(follow_symlinks=False)
+                            used = max(0, getattr(stat, "st_blocks", 0) * 512)
+                            size = max(0, stat.st_size)
+                            old = stat.st_mtime < cutoff
+                            ext = Path(entry.name).suffix.lower() or "(none)"
+                            for acc in (total, chats[chat], kinds[ext]):
+                                acc["files"] += 1
+                                acc["logical"] += size
+                                acc["allocated"] += used
+                                if old:
+                                    acc["old_files"] += 1
+                                    acc["old_allocated"] += used
+                    except OSError:
+                        errors += 1
+        except OSError:
+            errors += 1
+    return dict(summary=total, chats=chats, types=kinds,
+                errors=errors, symlinks_skipped=skipped, older_than_days=older_than)
+
+
+def size(n):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return ("{:.0f}" if unit == "B" else "{:.2f}").format(n) + " " + unit
+        n /= 1024
+    return ""
+
+
+def report(data, top=10, show_ids=False):
+    chats = sorted(data["chats"].items(), key=lambda pair: (-pair[1]["allocated"], pair[0]))
+    types = sorted(data["types"].items(), key=lambda pair: (-pair[1]["allocated"], pair[0]))
+    return dict(
+        summary=data["summary"],
+        older_than_days=data["older_than_days"],
+        chats_total=len(chats),
+        chats=[dict(chat=k if show_ids else "Chat #" + str(i),
+                    kind=chat_type(k), **v) for i, (k, v) in enumerate(chats[:top], 1)],
+        types=[dict(type=k, **v) for k, v in types[:top]],
+        symlinks_skipped=data["symlinks_skipped"], errors=data["errors"]
+    )
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Inspect WhatsApp media metadata without modifying files.")
+    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--older-than", type=int, default=90, metavar="DAYS")
+    parser.add_argument("--show-ids", action="store_true", help="Show private chat directory IDs")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    if args.top < 1 or args.older_than < 0:
+        parser.error("top must be >=1 and older-than >=0")
+    try:
+        result = report(scan(args.root, args.older_than), args.top, args.show_ids)
+    except ValueError as exc:
+        print("whatscop: " + str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        total = result["summary"]
+        print("WhatsCop — read-only WhatsApp media report")
+        print("Files: {:,} | Chats: {:,}".format(total["files"], result["chats_total"]))
+        print("Estimated allocated: {} | Logical: {}".format(size(total["allocated"]), size(total["logical"])))
+        print("Modified more than {} days ago: {} in {:,} files".format(
+            args.older_than, size(total["old_allocated"]), total["old_files"]))
+        print("\nTop chats:")
+        for row in result["chats"]:
+            print("  {:<24} {:>11}  {:>6} files  {}".format(
+                row["chat"][:24], size(row["allocated"]), row["files"], row["kind"]))
+        print("\nTop types:")
+        for row in result["types"]:
+            print("  {:<18} {:>11}  {:>6} files".format(
+                row["type"][:18], size(row["allocated"]), row["files"]))
+        print("\nNo files were changed. Old files are not necessarily safe to delete.")
+        print("APFS sharing and clones can make allocated estimates differ from reclaimable bytes.")
+        if result["symlinks_skipped"]:
+            print("Skipped symlinks:", result["symlinks_skipped"])
+        if result["errors"]:
+            print("Inaccessible entries:", result["errors"])
+    return 1 if result["errors"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
